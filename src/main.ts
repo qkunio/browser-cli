@@ -6,6 +6,7 @@ import './styles.css';
 type Session = {
   id: string;
   name: string;
+  favicon: string;
   cwd: string;
   createdAt: string;
   status: 'running' | 'exited';
@@ -13,14 +14,19 @@ type Session = {
   occupied: boolean;
 };
 
+type SessionInfoValue = {
+  name: string;
+  favicon: string;
+};
+
 const app = document.querySelector<HTMLDivElement>('#app');
+const defaultFavicon = 'claude.webp';
 
 if (!app) {
   throw new Error('App root not found');
 }
 
 const appRoot = app;
-
 const route = window.location.pathname;
 const terminalMatch = route.match(/^\/terminal\/([^/]+)$/);
 
@@ -31,6 +37,8 @@ if (terminalMatch) {
 }
 
 function renderManager() {
+  document.title = 'Browser CLI';
+  setPageFavicon(defaultFavicon);
   appRoot.innerHTML = `
     <main class="shell">
       <section class="toolbar">
@@ -113,7 +121,9 @@ async function loadSessions(sessionList: HTMLElement, statusLine: HTMLElement, q
     }
 
     for (const session of sessions) {
-      sessionList.appendChild(createSessionRow(session));
+      sessionList.appendChild(createSessionRow(session, () => {
+        void loadSessions(sessionList, statusLine, true);
+      }));
     }
 
     setStatus(statusLine, `${sessions.length} 个会话`);
@@ -122,7 +132,7 @@ async function loadSessions(sessionList: HTMLElement, statusLine: HTMLElement, q
   }
 }
 
-function createSessionRow(session: Session) {
+function createSessionRow(session: Session, onChanged: () => void) {
   const row = document.createElement('article');
   row.className = 'session-row';
 
@@ -133,22 +143,36 @@ function createSessionRow(session: Session) {
     minute: '2-digit'
   }).format(new Date(session.createdAt));
 
+  const statusText = session.occupied
+    ? '占用中'
+    : session.status === 'running'
+      ? '运行中'
+      : `已退出 ${session.exitCode ?? ''}`;
+
   row.innerHTML = `
     <div class="session-main">
       <div class="session-title">
-        <span>${escapeHtml(session.name)}</span>
-        <span class="badge ${session.occupied ? 'busy' : ''}">
-          ${session.occupied ? '占用中' : session.status === 'running' ? '运行中' : `已退出 ${session.exitCode ?? ''}`}
-        </span>
+        <img class="session-favicon" src="${faviconUrl(session.favicon)}" alt="" />
+        <span class="session-name">${escapeHtml(session.name)}</span>
+        <span class="badge ${session.occupied ? 'busy' : ''}">${statusText}</span>
       </div>
       <div class="path" title="${escapeHtml(session.cwd)}">${escapeHtml(session.cwd)}</div>
       <div class="meta">创建于 ${createdAt}</div>
     </div>
     <div class="actions">
+      <button class="icon-button rename" type="button" title="修改会话信息">✎</button>
       <button class="icon-button enter" type="button" title="进入会话" ${session.occupied || session.status !== 'running' ? 'disabled' : ''}>↗</button>
       <button class="icon-button close" type="button" title="关闭会话">×</button>
     </div>
   `;
+
+  row.querySelector<HTMLButtonElement>('.rename')?.addEventListener('click', async () => {
+    const updated = await editSessionInfo(session);
+
+    if (updated) {
+      onChanged();
+    }
+  });
 
   row.querySelector<HTMLButtonElement>('.enter')?.addEventListener('click', () => {
     window.location.href = `/terminal/${encodeURIComponent(session.id)}`;
@@ -167,12 +191,18 @@ function createSessionRow(session: Session) {
 }
 
 async function renderTerminal(sessionId: string) {
+  document.title = '连接中 - Browser CLI';
+  setPageFavicon(defaultFavicon);
   appRoot.innerHTML = `
     <main class="terminal-page">
       <header class="terminal-bar">
         <button class="icon-button" id="back" type="button" title="返回会话管理">←</button>
         <div class="terminal-title">
-          <strong id="terminal-name">连接中...</strong>
+          <div class="terminal-name-row">
+            <img class="session-favicon" id="terminal-favicon" src="${faviconUrl(defaultFavicon)}" alt="" />
+            <strong id="terminal-name">连接中...</strong>
+            <button class="icon-button compact" id="rename-session" type="button" title="修改会话信息" disabled>✎</button>
+          </div>
           <span id="terminal-path"></span>
         </div>
         <span class="connection" id="connection">正在连接</span>
@@ -189,6 +219,8 @@ async function renderTerminal(sessionId: string) {
   const connection = getElement<HTMLElement>('connection');
   const terminalName = getElement<HTMLElement>('terminal-name');
   const terminalPath = getElement<HTMLElement>('terminal-path');
+  const terminalFavicon = getElement<HTMLImageElement>('terminal-favicon');
+  const renameButton = getElement<HTMLButtonElement>('rename-session');
   const term = new Terminal({
     cursorBlink: true,
     convertEol: false,
@@ -203,6 +235,7 @@ async function renderTerminal(sessionId: string) {
     }
   });
   const fitAddon = new FitAddon();
+  let currentSession: Session | null = null;
   let socket: WebSocket | null = null;
   let ready = false;
 
@@ -210,6 +243,21 @@ async function renderTerminal(sessionId: string) {
   term.open(host);
   fitAddon.fit();
   term.focus();
+
+  renameButton.addEventListener('click', async () => {
+    if (!currentSession) {
+      return;
+    }
+
+    const updated = await editSessionInfo(currentSession);
+
+    if (updated) {
+      currentSession = updated;
+      applySessionInfo(updated, terminalName, terminalPath, terminalFavicon);
+    }
+
+    term.focus();
+  });
 
   const connect = () => {
     socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/sessions/${encodeURIComponent(sessionId)}/terminal`);
@@ -224,9 +272,9 @@ async function renderTerminal(sessionId: string) {
       const message = JSON.parse(String(event.data));
 
       if (message.type === 'ready') {
-        const session = message.session as Session;
-        terminalName.textContent = session.name;
-        terminalPath.textContent = session.cwd;
+        currentSession = message.session as Session;
+        renameButton.disabled = false;
+        applySessionInfo(currentSession, terminalName, terminalPath, terminalFavicon);
         return;
       }
 
@@ -289,6 +337,159 @@ async function renderTerminal(sessionId: string) {
       rows: term.rows
     }));
   }
+}
+
+async function editSessionInfo(session: Session) {
+  const favicons = await fetchFavicons();
+  const value = await openSessionInfoDialog(session, favicons);
+
+  if (!value) {
+    return null;
+  }
+
+  const response = await fetch(`/sessions/${encodeURIComponent(session.id)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(value)
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    window.alert(body?.message || body?.error || '修改会话信息失败');
+    return null;
+  }
+
+  return (await response.json()) as Session;
+}
+
+async function fetchFavicons() {
+  const response = await fetch('/favicons');
+
+  if (!response.ok) {
+    throw new Error('加载 favicon 列表失败');
+  }
+
+  return (await response.json()) as string[];
+}
+
+function openSessionInfoDialog(session: Session, favicons: string[]) {
+  return new Promise<SessionInfoValue | null>(resolve => {
+    const availableFavicons = favicons.length ? favicons : [session.favicon || defaultFavicon];
+    const currentFavicon = availableFavicons.includes(session.favicon)
+      ? session.favicon
+      : availableFavicons[0];
+    const modal = document.createElement('div');
+
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `
+      <form class="session-dialog">
+        <header class="dialog-header">
+          <h2>修改会话信息</h2>
+          <button class="icon-button compact dialog-close" type="button" title="关闭">×</button>
+        </header>
+        <label class="field">
+          <span>标题</span>
+          <input id="session-name-input" name="name" type="text" maxlength="200" value="${escapeHtml(session.name)}" />
+        </label>
+        <fieldset class="favicon-picker">
+          <legend>图标</legend>
+          <div class="favicon-options">
+            ${availableFavicons.map(file => `
+              <label class="favicon-option ${file === currentFavicon ? 'selected' : ''}">
+                <input type="radio" name="favicon" value="${escapeHtml(file)}" ${file === currentFavicon ? 'checked' : ''} />
+                <img src="${faviconUrl(file)}" alt="${escapeHtml(file)}" title="${escapeHtml(file)}" />
+              </label>
+            `).join('')}
+          </div>
+        </fieldset>
+        <footer class="dialog-actions">
+          <button class="secondary" type="button" id="cancel-session-dialog">取消</button>
+          <button class="primary" type="submit">保存</button>
+        </footer>
+      </form>
+    `;
+
+    document.body.appendChild(modal);
+
+    const form = modal.querySelector<HTMLFormElement>('form');
+    const nameInput = modal.querySelector<HTMLInputElement>('#session-name-input');
+    const closeButton = modal.querySelector<HTMLButtonElement>('.dialog-close');
+    const cancelButton = modal.querySelector<HTMLButtonElement>('#cancel-session-dialog');
+
+    const finish = (value: SessionInfoValue | null) => {
+      modal.remove();
+      resolve(value);
+    };
+
+    modal.querySelectorAll<HTMLInputElement>('input[name="favicon"]').forEach(input => {
+      input.addEventListener('change', () => {
+        modal.querySelectorAll('.favicon-option').forEach(option => {
+          option.classList.toggle('selected', option.querySelector('input') === input);
+        });
+      });
+    });
+
+    closeButton?.addEventListener('click', () => finish(null));
+    cancelButton?.addEventListener('click', () => finish(null));
+    modal.addEventListener('click', event => {
+      if (event.target === modal) {
+        finish(null);
+      }
+    });
+    modal.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        finish(null);
+      }
+    });
+    form?.addEventListener('submit', event => {
+      event.preventDefault();
+
+      const name = nameInput?.value.trim() || '';
+      const favicon = modal.querySelector<HTMLInputElement>('input[name="favicon"]:checked')?.value || '';
+
+      if (!name) {
+        nameInput?.focus();
+        return;
+      }
+
+      finish({ name, favicon });
+    });
+
+    nameInput?.focus();
+    nameInput?.select();
+  });
+}
+
+function applySessionInfo(
+  session: Session,
+  nameElement: HTMLElement,
+  pathElement: HTMLElement,
+  faviconElement: HTMLImageElement
+) {
+  nameElement.textContent = session.name;
+  pathElement.textContent = session.cwd;
+  faviconElement.src = faviconUrl(session.favicon);
+  document.title = session.name;
+  setPageFavicon(session.favicon);
+}
+
+function setPageFavicon(file: string) {
+  const favicon = file || defaultFavicon;
+  let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+
+  link.href = faviconUrl(favicon);
+}
+
+function faviconUrl(file: string) {
+  return `/favicons/${encodeURIComponent(file || defaultFavicon)}`;
 }
 
 function setStatus(element: HTMLElement, message: string, error = false) {

@@ -1,9 +1,8 @@
 import express from 'express';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -12,9 +11,12 @@ import * as pty from 'node-pty';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const host = '127.0.0.1';
-const port = Number(process.env.PORT || 3000);
+const port = Number(process.env.PORT || 3819);
 const isDev = process.env.NODE_ENV !== 'production';
 const maxReplayBytes = 1024 * 1024;
+const faviconsDir = path.join(rootDir, 'favicons');
+const faviconExtensions = new Set(['.ico', '.png', '.jpg', '.jpeg', '.svg', '.webp']);
+const defaultFavicon = 'claude.webp';
 
 const app = express();
 const server = createServer(app);
@@ -25,6 +27,12 @@ app.use(express.json());
 app.get('/sessions', (_req, res) => {
   res.json([...sessions.values()].map(serializeSession));
 });
+
+app.get('/favicons', (_req, res) => {
+  res.json(listFavicons());
+});
+
+app.use('/favicons', express.static(faviconsDir));
 
 app.post('/sessions', async (_req, res) => {
   try {
@@ -48,6 +56,32 @@ app.post('/sessions', async (_req, res) => {
       message: error instanceof Error ? error.message : String(error)
     });
   }
+});
+
+app.patch('/sessions/:id', (req, res) => {
+  const session = sessions.get(req.params.id);
+
+  if (!session) {
+    res.status(404).json({ error: 'session_not_found' });
+    return;
+  }
+
+  const name = normalizeSessionName(req.body?.name);
+  const favicon = normalizeFavicon(req.body?.favicon);
+
+  if (!name) {
+    res.status(400).json({ error: 'invalid_session_name' });
+    return;
+  }
+
+  if (!favicon || !isAllowedFavicon(favicon)) {
+    res.status(400).json({ error: 'invalid_favicon' });
+    return;
+  }
+
+  session.name = name;
+  session.favicon = favicon;
+  res.json(serializeSession(session));
 });
 
 app.delete('/sessions/:id', (req, res) => {
@@ -172,7 +206,8 @@ function createSession(cwd) {
 
   const session = {
     id,
-    name: path.basename(cwd) || cwd,
+    name: cwd,
+    favicon: getDefaultFavicon(),
     cwd,
     createdAt: new Date().toISOString(),
     exitCode: null,
@@ -220,12 +255,77 @@ function serializeSession(session) {
   return {
     id: session.id,
     name: session.name,
+    favicon: session.favicon || getDefaultFavicon(),
     cwd: session.cwd,
     createdAt: session.createdAt,
     status: session.exitCode === null ? 'running' : 'exited',
     exitCode: session.exitCode,
     occupied: Boolean(session.client)
   };
+}
+
+function normalizeSessionName(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const name = value.trim();
+
+  if (!name || name.length > 200) {
+    return null;
+  }
+
+  return name;
+}
+
+function listFavicons() {
+  if (!existsSync(faviconsDir)) {
+    return [];
+  }
+
+  return readdirSync(faviconsDir, { withFileTypes: true })
+    .filter(entry => entry.isFile())
+    .map(entry => entry.name)
+    .filter(file => faviconExtensions.has(path.extname(file).toLowerCase()))
+    .sort((left, right) => {
+      if (left === defaultFavicon) {
+        return -1;
+      }
+
+      if (right === defaultFavicon) {
+        return 1;
+      }
+
+      return left.localeCompare(right);
+    });
+}
+
+function getDefaultFavicon() {
+  const favicons = listFavicons();
+
+  if (favicons.includes(defaultFavicon)) {
+    return defaultFavicon;
+  }
+
+  return favicons[0] || '';
+}
+
+function normalizeFavicon(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const favicon = value.trim();
+
+  if (!favicon || favicon.includes('/') || favicon.includes('\\') || favicon.includes('..')) {
+    return null;
+  }
+
+  return favicon;
+}
+
+function isAllowedFavicon(value) {
+  return listFavicons().includes(value);
 }
 
 function getDefaultShell() {
@@ -250,10 +350,24 @@ async function pickFolder() {
       '-Command',
       [
         'Add-Type -AssemblyName System.Windows.Forms;',
+        '[System.Windows.Forms.Application]::EnableVisualStyles();',
+        '$owner = New-Object System.Windows.Forms.Form;',
+        '$owner.Text = "Browser CLI";',
+        '$owner.StartPosition = "CenterScreen";',
+        '$owner.Width = 1;',
+        '$owner.Height = 1;',
+        '$owner.FormBorderStyle = "FixedToolWindow";',
+        '$owner.ShowInTaskbar = $true;',
+        '$owner.TopMost = $true;',
+        '$owner.Add_Shown({ $owner.Activate(); $owner.BringToFront(); });',
+        '$owner.Show();',
         '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;',
         '$dialog.Description = "选择终端启动目录";',
         '$dialog.ShowNewFolderButton = $true;',
-        'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {',
+        '$result = $dialog.ShowDialog($owner);',
+        '$owner.Close();',
+        '$owner.Dispose();',
+        'if ($result -eq [System.Windows.Forms.DialogResult]::OK) {',
         '  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;',
         '  Write-Output $dialog.SelectedPath',
         '}'

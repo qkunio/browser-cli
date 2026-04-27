@@ -25,6 +25,11 @@ button {
   font: inherit;
 }
 
+input {
+  color: inherit;
+  font: inherit;
+}
+
 .shell {
   min-height: 100%;
   padding: 32px;
@@ -67,6 +72,17 @@ h1 {
   border-radius: 8px;
   background: #e7c85f;
   color: #1c1a12;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.secondary {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #35423c;
+  border-radius: 8px;
+  background: #202622;
+  color: #eef3ee;
   cursor: pointer;
   font-weight: 700;
 }
@@ -130,6 +146,14 @@ h1 {
   font-weight: 700;
 }
 
+.session-favicon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -173,6 +197,13 @@ h1 {
   font-size: 20px;
 }
 
+.icon-button.compact {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 15px;
+}
+
 .icon-button:hover:not(:disabled),
 .primary:hover:not(:disabled) {
   filter: brightness(1.08);
@@ -200,12 +231,28 @@ h1 {
   min-width: 0;
 }
 
+.terminal-name-row,
+.terminal-title strong,
+.terminal-title span {
+  overflow: hidden;
+}
+
+.terminal-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .terminal-title strong,
 .terminal-title span {
   display: block;
-  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.terminal-title strong {
+  min-width: 0;
 }
 
 .terminal-title span {
@@ -223,6 +270,113 @@ h1 {
   min-width: 0;
   min-height: 0;
   padding: 8px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(9, 11, 10, 0.72);
+}
+
+.session-dialog {
+  display: grid;
+  gap: 18px;
+  width: min(560px, 100%);
+  max-height: min(720px, calc(100vh - 40px));
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid #35423c;
+  border-radius: 8px;
+  background: #171b19;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38);
+}
+
+.dialog-header,
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field span,
+.favicon-picker legend {
+  color: #b9c5bd;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.field input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #35423c;
+  border-radius: 8px;
+  background: #101412;
+  outline: none;
+}
+
+.field input:focus {
+  border-color: #e7c85f;
+}
+
+.favicon-picker {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.favicon-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, 72px);
+  gap: 8px;
+  justify-content: center;
+}
+
+.favicon-option {
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  width: 72px;
+  min-height: 72px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.favicon-option.selected {
+  border-color: #e7c85f;
+  background: #2b2b20;
+}
+
+.favicon-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.favicon-option img {
+  width: 42px;
+  height: 42px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
 }
 
 .xterm {
