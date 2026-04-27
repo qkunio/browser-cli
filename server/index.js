@@ -17,6 +17,7 @@ const maxReplayBytes = 1024 * 1024;
 const faviconsDir = path.join(rootDir, 'favicons');
 const faviconExtensions = new Set(['.ico', '.png', '.jpg', '.jpeg', '.svg', '.webp']);
 const defaultFavicon = 'claude.webp';
+const preferredFavicons = ['claude.webp', 'codex.svg'];
 
 const app = express();
 const server = createServer(app);
@@ -183,7 +184,20 @@ if (isDev) {
 }
 
 server.listen(port, host, () => {
-  console.log(`Browser CLI listening at http://${host}:${port}`);
+  const url = `http://${host}:${port}`;
+
+  printBanner(url);
+});
+
+server.on('error', error => {
+  if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
+    console.error(`Browser CLI could not start because ${host}:${port} is already in use.`);
+    console.error(`Set another port with PORT, for example: PORT=4000 browser-cli`);
+    process.exit(1);
+  }
+
+  console.error(`Browser CLI failed to start: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
 });
 
 process.on('SIGINT', shutdown);
@@ -288,12 +302,12 @@ function listFavicons() {
     .map(entry => entry.name)
     .filter(file => faviconExtensions.has(path.extname(file).toLowerCase()))
     .sort((left, right) => {
-      if (left === defaultFavicon) {
-        return -1;
-      }
+      const leftIndex = preferredFavicons.indexOf(left);
+      const rightIndex = preferredFavicons.indexOf(right);
 
-      if (right === defaultFavicon) {
-        return 1;
+      if (leftIndex !== -1 || rightIndex !== -1) {
+        return (leftIndex === -1 ? preferredFavicons.length : leftIndex)
+          - (rightIndex === -1 ? preferredFavicons.length : rightIndex);
       }
 
       return left.localeCompare(right);
@@ -342,37 +356,131 @@ function getDefaultShell() {
 
 async function pickFolder() {
   if (process.platform === 'win32') {
-    return runCommand('powershell.exe', [
-      '-NoProfile',
-      '-STA',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      [
-        'Add-Type -AssemblyName System.Windows.Forms;',
-        '[System.Windows.Forms.Application]::EnableVisualStyles();',
-        '$owner = New-Object System.Windows.Forms.Form;',
-        '$owner.Text = "Browser CLI";',
-        '$owner.StartPosition = "CenterScreen";',
-        '$owner.Width = 1;',
-        '$owner.Height = 1;',
-        '$owner.FormBorderStyle = "FixedToolWindow";',
-        '$owner.ShowInTaskbar = $true;',
-        '$owner.TopMost = $true;',
-        '$owner.Add_Shown({ $owner.Activate(); $owner.BringToFront(); });',
-        '$owner.Show();',
-        '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;',
-        '$dialog.Description = "选择终端启动目录";',
-        '$dialog.ShowNewFolderButton = $true;',
-        '$result = $dialog.ShowDialog($owner);',
-        '$owner.Close();',
-        '$owner.Dispose();',
-        'if ($result -eq [System.Windows.Forms.DialogResult]::OK) {',
-        '  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;',
-        '  Write-Output $dialog.SelectedPath',
-        '}'
-      ].join(' ')
-    ]);
+    return runPowerShellScript(`
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class ModernFolderPicker
+{
+    private const uint FOS_PICKFOLDERS = 0x00000020;
+    private const uint FOS_FORCEFILESYSTEM = 0x00000040;
+    private const uint FOS_NOCHANGEDIR = 0x00000008;
+    private const uint FOS_PATHMUSTEXIST = 0x00000800;
+    private const uint SIGDN_FILESYSPATH = 0x80058000;
+    private const int ERROR_CANCELLED = unchecked((int)0x800704C7);
+
+    public static string PickFolder(IntPtr owner, string title, string okButtonLabel)
+    {
+        var dialog = (IFileOpenDialog)new FileOpenDialog();
+        dialog.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR | FOS_PATHMUSTEXIST);
+        dialog.SetTitle(title);
+        dialog.SetOkButtonLabel(okButtonLabel);
+
+        int result = dialog.Show(owner);
+        if (result == ERROR_CANCELLED)
+        {
+            return null;
+        }
+
+        Marshal.ThrowExceptionForHR(result);
+
+        IShellItem item;
+        dialog.GetResult(out item);
+
+        IntPtr path;
+        item.GetDisplayName(SIGDN_FILESYSPATH, out path);
+
+        try
+        {
+            return Marshal.PtrToStringUni(path);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(path);
+        }
+    }
+
+    [ComImport]
+    [Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    private class FileOpenDialog
+    {
+    }
+
+    [ComImport]
+    [Guid("D57C7288-D4AD-4768-BE02-9D969532D960")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileOpenDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        void SetFileTypeIndex(uint iFileType);
+        void GetFileTypeIndex(out uint piFileType);
+        void Advise(IntPtr pfde, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOptions(uint fos);
+        void GetOptions(out uint pfos);
+        void SetDefaultFolder(IShellItem psi);
+        void SetFolder(IShellItem psi);
+        void GetFolder(out IShellItem ppsi);
+        void GetCurrentSelection(out IShellItem ppsi);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        void GetResult(out IShellItem ppsi);
+        void AddPlace(IShellItem psi, uint fdap);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+        void Close(int hr);
+        void SetClientGuid(ref Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr pFilter);
+        void GetResults(out IntPtr ppenum);
+        void GetSelectedItems(out IntPtr ppsai);
+    }
+
+    [ComImport]
+    [Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem
+    {
+        void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+}
+"@
+
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$owner = New-Object System.Windows.Forms.Form
+$owner.Text = "Browser CLI"
+$owner.StartPosition = "CenterScreen"
+$owner.Width = 1
+$owner.Height = 1
+$owner.FormBorderStyle = "FixedToolWindow"
+$owner.ShowInTaskbar = $true
+$owner.TopMost = $true
+$owner.Add_Shown({ $owner.Activate(); $owner.BringToFront() })
+$owner.Show()
+
+try {
+  $selectedPath = [ModernFolderPicker]::PickFolder($owner.Handle, "打开文件夹", "选择文件夹")
+  if ($selectedPath) {
+    Write-Output $selectedPath
+  }
+}
+finally {
+  $owner.Close()
+  $owner.Dispose()
+}
+`);
   }
 
   if (process.platform === 'darwin') {
@@ -383,6 +491,17 @@ async function pickFolder() {
   }
 
   return runCommand('zenity', ['--file-selection', '--directory', '--title=选择终端启动目录']);
+}
+
+function runPowerShellScript(script) {
+  return runCommand('powershell.exe', [
+    '-NoProfile',
+    '-STA',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    script
+  ]);
 }
 
 function runCommand(command, args) {
@@ -438,6 +557,33 @@ function clampInteger(value, min, max) {
   }
 
   return Math.max(min, Math.min(max, parsed));
+}
+
+function printBanner(url) {
+  const colors = ['\x1b[38;5;81m', '\x1b[38;5;117m', '\x1b[38;5;159m', '\x1b[38;5;221m', '\x1b[38;5;215m'];
+  const reset = '\x1b[0m';
+  const banner = String.raw`
+  ____                                             ____ _     ___ 
+ | __ ) _ __ _____      _____  ___ _ __           / ___| |   |_ _|
+ |  _ \| '__/ _ \ \ /\ / / __|/ _ \ '__|  _____  | |   | |    | | 
+ | |_) | | | (_) \ V  V /\__ \  __/ |    |_____| | |___| |___ | | 
+ |____/|_|  \___/ \_/\_/ |___/\___|_|             \____|_____|___|
+`;
+
+  console.log(
+    banner
+      .replace(/^\r?\n/, '')
+      .replace(/\r?\n$/, '')
+      .split('\n')
+      .map((line, index) => `${colors[index % colors.length]}${line}${reset}`)
+      .join('\n')
+  );
+  console.log(`\n${colors[1]}Browser CLI is running at ${url}${reset}`);
+  console.log(`${colors[1]}Browser CLI 正在运行：${url}${reset}`);
+  console.log(`\n${colors[3]}Keep this terminal open while using Browser CLI.${reset}`);
+  console.log(`${colors[3]}使用 Browser CLI 时请不要关闭这个终端。${reset}`);
+  console.log(`${colors[4]}Command output history is not kept after this terminal closes. Tools like Claude Code may save their own conversation history.${reset}`);
+  console.log(`${colors[4]}关闭终端后命令记录不保留；Claude Code 等工具会自动保存自己的历史会话记录。${reset}\n`);
 }
 
 function shutdown() {

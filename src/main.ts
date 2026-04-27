@@ -38,13 +38,12 @@ if (terminalMatch) {
 
 function renderManager() {
   document.title = 'Browser CLI';
-  setPageFavicon(defaultFavicon);
+  setPageFavicon('app.png');
   appRoot.innerHTML = `
     <main class="shell">
       <section class="toolbar">
         <div>
           <h1>Browser CLI</h1>
-          <p class="muted">本机会话管理</p>
         </div>
         <button class="primary" id="new-session" type="button" title="新建会话">
           <span aria-hidden="true">+</span>
@@ -59,9 +58,14 @@ function renderManager() {
   const newSessionButton = getElement<HTMLButtonElement>('new-session');
   const statusLine = getElement<HTMLElement>('status-line');
   const sessionList = getElement<HTMLElement>('session-list');
+  const toolbarTitle = document.querySelector<HTMLElement>('.toolbar > div');
+
+  toolbarTitle?.classList.add('brand');
+  toolbarTitle?.insertAdjacentHTML('afterbegin', '<img class="app-logo" src="/favicons/app.png" alt="" />');
 
   newSessionButton.addEventListener('click', async () => {
     newSessionButton.disabled = true;
+    const terminalTab = window.open('', '_blank');
     setStatus(statusLine, '正在打开系统文件夹选择器...');
 
     try {
@@ -70,6 +74,7 @@ function renderManager() {
       if (response.status === 400) {
         const body = await response.json().catch(() => null);
         if (body?.error === 'folder_selection_cancelled') {
+          terminalTab?.close();
           setStatus(statusLine, '已取消新建会话。');
           return;
         }
@@ -81,8 +86,16 @@ function renderManager() {
       }
 
       const session = (await response.json()) as Session;
-      window.location.href = `/terminal/${encodeURIComponent(session.id)}`;
+      const terminalUrl = `/terminal/${encodeURIComponent(session.id)}`;
+
+      if (terminalTab) {
+        terminalTab.location.href = terminalUrl;
+        terminalTab.opener = null;
+      } else {
+        window.location.href = terminalUrl;
+      }
     } catch (error) {
+      terminalTab?.close();
       setStatus(statusLine, error instanceof Error ? error.message : String(error), true);
     } finally {
       newSessionButton.disabled = false;
@@ -175,7 +188,14 @@ function createSessionRow(session: Session, onChanged: () => void) {
   });
 
   row.querySelector<HTMLButtonElement>('.enter')?.addEventListener('click', () => {
-    window.location.href = `/terminal/${encodeURIComponent(session.id)}`;
+    const terminalUrl = new URL(`/terminal/${encodeURIComponent(session.id)}`, window.location.origin);
+    const terminalTab = window.open(terminalUrl.href, '_blank');
+
+    if (terminalTab) {
+      terminalTab.opener = null;
+    } else {
+      window.location.href = terminalUrl.href;
+    }
   });
 
   row.querySelector<HTMLButtonElement>('.close')?.addEventListener('click', async () => {
@@ -238,10 +258,23 @@ async function renderTerminal(sessionId: string) {
   let currentSession: Session | null = null;
   let socket: WebSocket | null = null;
   let ready = false;
+  let terminalTitle = document.title;
+  let lastTerminalOutputAt = 0;
+  let idleTitleTimer: number | null = null;
+  let titleMarkedDone = false;
+  let outputAfterHiddenStarted = false;
+  let hiddenStartedAt = 0;
+  let pendingFitFrame = 0;
+  let lastHostWidth = 0;
+  let lastHostHeight = 0;
+  let lastSentCols = 0;
+  let lastSentRows = 0;
+  const hiddenOutputDelayMs = 2000;
+  const outputIdleDoneMs = 1000;
 
   term.loadAddon(fitAddon);
   term.open(host);
-  fitAddon.fit();
+  scheduleFit();
   term.focus();
 
   renameButton.addEventListener('click', async () => {
@@ -254,6 +287,7 @@ async function renderTerminal(sessionId: string) {
     if (updated) {
       currentSession = updated;
       applySessionInfo(updated, terminalName, terminalPath, terminalFavicon);
+      setTerminalTitle(updated.name);
     }
 
     term.focus();
@@ -275,10 +309,12 @@ async function renderTerminal(sessionId: string) {
         currentSession = message.session as Session;
         renameButton.disabled = false;
         applySessionInfo(currentSession, terminalName, terminalPath, terminalFavicon);
+        setTerminalTitle(currentSession.name);
         return;
       }
 
       if (message.type === 'output') {
+        markTerminalActive();
         term.write(message.data);
         return;
       }
@@ -314,13 +350,30 @@ async function renderTerminal(sessionId: string) {
     }
   });
 
-  const resizeObserver = new ResizeObserver(() => {
-    fitAddon.fit();
-    sendResize();
+  const resizeObserver = new ResizeObserver(entries => {
+    const rect = entries[0]?.contentRect;
+
+    if (!rect) {
+      return;
+    }
+
+    const width = Math.round(rect.width);
+    const height = Math.round(rect.height);
+
+    if (width === lastHostWidth && height === lastHostHeight) {
+      return;
+    }
+
+    lastHostWidth = width;
+    lastHostHeight = height;
+    scheduleFit();
   });
 
   resizeObserver.observe(host);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
   window.addEventListener('beforeunload', () => {
+    cancelPendingFit();
+    clearIdleTitleTimer();
     socket?.close();
   });
 
@@ -331,11 +384,106 @@ async function renderTerminal(sessionId: string) {
       return;
     }
 
+    if (term.cols === lastSentCols && term.rows === lastSentRows) {
+      return;
+    }
+
+    lastSentCols = term.cols;
+    lastSentRows = term.rows;
+
     socket.send(JSON.stringify({
       type: 'resize',
       cols: term.cols,
       rows: term.rows
     }));
+  }
+
+  function scheduleFit() {
+    if (pendingFitFrame) {
+      return;
+    }
+
+    pendingFitFrame = window.requestAnimationFrame(() => {
+      pendingFitFrame = 0;
+      fitAddon.fit();
+      sendResize();
+    });
+  }
+
+  function cancelPendingFit() {
+    if (pendingFitFrame) {
+      window.cancelAnimationFrame(pendingFitFrame);
+      pendingFitFrame = 0;
+    }
+  }
+
+  function setTerminalTitle(title: string) {
+    terminalTitle = title;
+    document.title = titleMarkedDone ? `✅ ${terminalTitle}` : terminalTitle;
+  }
+
+  function markTerminalActive() {
+    lastTerminalOutputAt = Date.now();
+    titleMarkedDone = false;
+    setTerminalTitle(terminalTitle);
+    clearIdleTitleTimer();
+
+    if (!document.hidden) {
+      return;
+    }
+
+    if (Date.now() - hiddenStartedAt < hiddenOutputDelayMs) {
+      return;
+    }
+
+    outputAfterHiddenStarted = true;
+    idleTitleTimer = window.setTimeout(updateIdleTitleMarker, outputIdleDoneMs);
+  }
+
+  function handleVisibilityChange() {
+    if (document.hidden) {
+      hiddenStartedAt = Date.now();
+      outputAfterHiddenStarted = false;
+      lastTerminalOutputAt = 0;
+      clearIdleTitleTimer();
+      return;
+    }
+
+    hiddenStartedAt = 0;
+    outputAfterHiddenStarted = false;
+    lastTerminalOutputAt = 0;
+    clearIdleTitleTimer();
+
+    if (titleMarkedDone) {
+      titleMarkedDone = false;
+      setTerminalTitle(terminalTitle);
+    }
+  }
+
+  function updateIdleTitleMarker() {
+    if (!outputAfterHiddenStarted || !lastTerminalOutputAt) {
+      return;
+    }
+
+    const idleMs = Date.now() - lastTerminalOutputAt;
+
+    if (document.hidden && outputAfterHiddenStarted && idleMs >= outputIdleDoneMs) {
+      titleMarkedDone = true;
+      setTerminalTitle(terminalTitle);
+      return;
+    }
+
+    if (idleMs < outputIdleDoneMs) {
+      clearIdleTitleTimer();
+      idleTitleTimer = window.setTimeout(updateIdleTitleMarker, outputIdleDoneMs - idleMs);
+    }
+  }
+
+  function clearIdleTitleTimer() {
+    if (idleTitleTimer !== null) {
+      window.clearTimeout(idleTitleTimer);
+      idleTitleTimer = null;
+    }
   }
 }
 
@@ -433,11 +581,6 @@ function openSessionInfoDialog(session: Session, favicons: string[]) {
 
     closeButton?.addEventListener('click', () => finish(null));
     cancelButton?.addEventListener('click', () => finish(null));
-    modal.addEventListener('click', event => {
-      if (event.target === modal) {
-        finish(null);
-      }
-    });
     modal.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
         finish(null);

@@ -1,8 +1,22 @@
 # Browser CLI
 
-Browser CLI 把你的CLI带进浏览器。
+<p align="center">
+  <img src="./favicons/app.png" alt="Browser CLI" width="120" />
+</p>
+
+Browser CLI 把你的 `终端` 带进浏览器。
 
 使用浏览器管理你的所有Claude Code、Codex CLI对话。你可以使用浏览器原生能力对不同对话框进行分组。
+
+请使用 Chrome+Windows 11来体验本项目。
+
+## 核心卖点
+
+- 后台完成提醒
+- 多会话像浏览器标签一样管理
+- 关掉页面不丢进程
+
+只要 Browser CLI 服务还在，终端会话会继续跑，回到管理页还能再接上。
 
 ## 功能
 
@@ -21,13 +35,8 @@ Browser CLI 把你的CLI带进浏览器。
 ## 安装
 
 ```powershell
-npm install
-```
-
-## 开发运行
-
-```powershell
-npm run dev
+npm install -g @qkunio/browser-cli
+browser-cli
 ```
 
 然后打开：
@@ -36,27 +45,12 @@ npm run dev
 http://127.0.0.1:3819
 ```
 
-## 生产运行
-
-先构建前端：
-
-```powershell
-npm run build
-```
-
-再启动服务：
-
-```powershell
-npm start
-```
-
 ## 配置
 
 默认端口是 `3819`，可以通过 `PORT` 覆盖：
 
 ```powershell
 $env:PORT = "4000"
-npm start
 ```
 
 默认 shell：
