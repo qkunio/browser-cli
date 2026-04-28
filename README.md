@@ -8,7 +8,7 @@ Browser CLI 把你的 `终端` 带进浏览器。
 
 使用浏览器管理你的所有Claude Code、Codex CLI对话。你可以使用浏览器原生能力对不同对话框进行分组。
 
-请使用 Chrome+Windows 11来体验本项目。
+【注意】请使用 **Chrome + Windows 11** 来体验本项目。其它平台（如MacOS）请使用 Tmux 等更好工具。
 
 ## 核心卖点
 
